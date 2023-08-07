@@ -1,0 +1,276 @@
+---
+title: |
+    | "Project_Pegasus"
+    | "An Analysis Differentiating Members from Casual Riders" 
+author: "Brian Rice"
+date: "2023-08-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+library("tidyverse")
+library("ggplot2")
+library("skimr")
+library("dplyr")
+
+
+bike <- read_csv(
+  "C:\\Users\\brice\\Downloads\\202004-divvy-tripdata\\202004-divvy-tripdata.csv")
+```
+
+```{r examine, include=TRUE}
+skim_without_charts(bike)
+```
+## Overview
+84,776 records
+13 fields
+dtypes: char, num, POSIXct
+
+Skimming we notice there are 99 end station records missing,
+which correspond to 99 end_lat and end_lng records which are also missing.
+
+```{r missing_data, include=FALSE}
+bike_missing <- bike[is.na(bike$end_station_name),]
+
+#I do not discern any patterns in the missing data
+#since 99 of 84,776 total records is only slightly more 
+#than .1% of the total data we'll drop these records
+```
+
+Lacking instructions we will drop these records from our analysis.
+We will also drop columns which do not bear on our analysis,
+like the station_names, rideable type (which has the same value 
+for every record).
+
+```{r drop_missing, include=TRUE}
+
+clean_bike <- na.omit(bike)
+clean_bike <- clean_bike[, -c(2, 5, 7)]
+```
+
+## Adding Columns: 
+* ride_duration
+* start_time
+* start_hour
+* start_day
+* part_of_day
+
+```{r adding_cols, include=TRUE}
+clean_bike$ride_duration <- clean_bike$ended_at - clean_bike$started_at
+
+clean_bike$start_time <- format(clean_bike$started_at, format = '%H:%M:%S')
+clean_bike$start_hour <- format(clean_bike$started_at, format = '%H')
+
+clean_bike$start_day <- weekdays(clean_bike$started_at)
+
+clean_bike <- clean_bike %>% 
+  mutate(part_of_day = case_when(
+    start_hour >= 5 & start_hour < 10 ~ 'morning',
+    start_hour >= 10 & start_hour < 16 ~ 'mid',
+    start_hour >= 16 & start_hour < 20 ~ 'evening',
+    start_hour >= 20 | start_hour < 5 ~ 'late'
+  ))
+```
+
+## Clean and Drop
+* filter out negative ride_durations as obvious errors
+* filter out ride_duration = 0 as probably user errors
+* dropping columns we no longer need:
+  + ride_id
+  + started_at
+  + ended_at
+  + start_time
+
+```{r clean_and_drop, include=TRUE}
+
+clean_bike <- clean_bike %>% 
+  filter(ride_duration > 0)
+
+clean_bike <- clean_bike[, -c(1, 2, 3, 12)]
+```
+## First Plot
+
+```{r plot_first, include=TRUE}
+ggplot(data = clean_bike) +
+  geom_bar(mapping = aes(x = start_hour)) +
+  facet_wrap(~member_casual)
+```
+
+## First Impression
+
+We can discard the hours of midnight to 5am as there are virtually no users
+between those times.
+
+```{r 5am, include=FALSE}
+clean_bike$start_hour <- as.numeric(clean_bike$start_hour)
+
+late_crowd  <- clean_bike %>% 
+  filter(start_hour < 5)
+ggplot(data = clean_bike) +
+  geom_bar(data = subset(clean_bike, start_hour < 5), 
+           mapping = aes(x = start_hour))
+
+count(late_crowd)
+count(late_crowd) / count(clean_bike) * 100
+
+#the total number of customers taking rides between midnight and 5am are 879.
+#This is about 1% of our total so we'll drop these hours to focus more tightly
+#on the busier times
+
+clean_bike <- clean_bike %>% 
+  filter(start_hour >= 5)
+```
+## Improved Plot
+Having removed the midnight to 5am time range our plot looks much better.
+
+Here we can see the member users significantly outnumber the casual riders,
+and while the members see the real start of business around 6am it isn't 
+until 11am that the casual riders even begin to match that. 
+
+The casual riders peak at about 2,800 at 2pm, remain steady for several 
+more hours, before declining. 
+Whereas the members peak at over 6,000 at 5pm and decline rapidly thereafter.
+
+
+```{r plot_improved, echo=FALSE}
+ggplot(data = clean_bike) +
+  geom_bar(mapping = aes(x = start_hour, fill='orange')) +
+  facet_wrap(~member_casual)
+```
+
+## Analysis by Day
+
+These views are fascinating as they reveal that while the casual riders favor
+Saturday and Sunday rides (as one might expect), the members also have a
+strong usage profile on the weekend.
+This is important because it suggests that the member riders are not simply
+using the bikes as a means of transportation but might also be using the bikes 
+for recreation.
+Otherwise the profiles fit the more generalized view of casual riders
+favoring later in the day while members tend to be busiest around the end
+of the workday.
+
+```{r plot_analysis_by_day, echo=FALSE}
+
+ggplot(data = clean_bike) +
+  geom_bar(mapping = aes(x = start_hour)) +
+  facet_wrap(member_casual ~ start_day)
+```
+
+## Demonstrating map data
+
+This is merely an example to demonstrate that while we might expect 
+greater activity at the edges of the city in the morning, as commuters go into
+work in the city the activity at the edges (suburbs) is rather weak. 
+The real demand is clustered in the heart of the city.
+We can speculate that perhaps customers are taking the "L" into the city and
+using the bike for the final leg of their journey.
+
+```{r plot_map, echo=FALSE}
+
+ggplot(data = clean_bike) +
+  geom_point(data = subset(clean_bike, start_hour = 8),
+             mapping = aes(x = start_lat, y = start_lng, alpha = .05)) +
+  facet_wrap(~member_casual)
+```
+
+## Ride Duration
+Casual riders average a 71 minute ride while members average a 21 minute ride.
+It is unlikely that casual riders are spending a hour on the bike commuting
+everyday, therefore we can tentatively conclude that they are using the bike
+primarily for recreation.
+Members on the other hand average just 20 minutes, which is exactly right if
+you were commuting by bike. 
+Here I am drawing from personal experience as I commuted to work by bike for 
+10 years while living in Baltimore. My commute covered 4 miles in about 
+20 minutes depending on traffic lights. Which aligns perfectly with the data.
+
+```{r avg_ride_duration}
+
+ride_avg <- clean_bike %>% 
+  group_by(member_casual, start_day, start_hour) %>% 
+  summarize(ride_avg = mean(ride_duration) / 60)
+```
+## Ride Duration by Day
+Here we graph the average ride time by day per member/casual.
+Among casual riders We can see a fairly wide distribution of average 
+ride time cresting somewhere in the middle of the day, while members stay
+consistently in the 20 minute range day in and day out.
+This would contradict our earlier theory that members are using the bike
+as a form of recreation.
+
+```{r plot_duration_by_day, echo=FALSE}
+
+ride_time <- ggplot(data = ride_avg) +
+  geom_point(mapping = aes(x=start_hour, y=ride_avg)) +
+  geom_smooth(mapping = aes(x=start_hour, y=ride_avg),
+              method = 'loess', formula = 'y ~ x') +
+  scale_y_continuous(limits = c(0, 100)) +
+  facet_grid(member_casual ~ start_day)
+ride_time
+```
+
+# Conclusion
+In our analysis we were tasked with answering three questions:
+
+1. How do member and casual riders differ?
+
+2. Why would casual riders buy into the membership program?
+
+3. How should digital media be used to influence casual riders to become
+members?
+
+
+# How do member and casual riders differ.
+Member riders are far more active across all hours of the day compared to 
+casual riders.
+Casual riders take longer rides, around an hour, most likely for recreation, 
+which is supported by their increase usage on the weekend. 
+Member riders take shorter trips, around 20 minutes, most likely as commuters.
+However that fails to explain members continued strong usage on the weekend.
+We can again theorize this is members running errands on the bike.
+This observation is critical because it indicates members see the bike as
+a method of transportation, a tool, **not a recreation**.
+
+# Why would casual riders buy into the membership program?
+To get casual members to buy into the membership program they must be convinced
+that the bike is not (or is not *just*) a recreational activity but a means of
+transportation; something they can use to get to work and run errands.
+
+# How should digital media be used to influence casual riders to become members?
+Digital media should focus on portraying the membership program as an effective
+mode of transportation.
+This campaign should target people who live or work in the downtown area as that
+is where the overwhelming majority of use occurs.
+
+
+# Follow up
+
+*set timeline for follow up.
+
+*set KPIs
+
+
+# Further questions for analysis:
+* It might be interesting to study the conversion rate of casual riders to
+members as it would reveal if it is worthwhile pursuing marketing campaigns to 
+draw in more casual riders who can later be converted to members.
+* This data doesn't contain rider ids so we cannot say if there is a core of
+riders who make up the majority of the activity or if it is evenly spread
+amongst all users.
+* demographic information about users would also allow more effective media
+campaigns. Age, sex, education, etc.
+
+
+
+
+
+
+
+
+
+
+
+
